@@ -64,16 +64,17 @@ void ParticleFilter::prediction(double delta_t, double std_pos[], double velocit
 	if ((yaw_rate > -EPS) && (yaw_rate < EPS)) {
 		yaw_rate = EPS;
 	}
-	
+
+	double v_y = velocity / yaw_rate;
+	double y_d = yaw_rate * delta_t;
 
 
 	for (int i = 0; i < num_particles; ++i) {
 		// predict vehicle's next position and heading based on the velocity and yaw rate
-		double x = particles[i].x + 
-			(velocity / yaw_rate) * (sin(particles[i].theta + (yaw_rate * delta_t)) - sin(particles[i].theta));
-		double y = particles[i].y + 
-			(velocity / yaw_rate) * (cos(particles[i].theta) - cos(particles[i].theta + (yaw_rate * delta_t)));
-		double theta = particles[i].theta + yaw_rate * delta_t;
+		Particle &particle = particles[i];
+		double x = particle.x + v_y * (sin(particle.theta + y_d) - sin(particle.theta));
+		double y = particle.y + v_y * (cos(particle.theta) - cos(particle.theta + y_d));
+		double theta = particle.theta + y_d;
 
 		// setup the gaussian random generator
 		normal_distribution<double> dist_x(x, std_pos[0]);
@@ -81,9 +82,9 @@ void ParticleFilter::prediction(double delta_t, double std_pos[], double velocit
 		normal_distribution<double> dist_theta(theta, std_pos[3]);
 
 		// add random gaussian noise
-		particles[i].x = dist_x(gen);
-		particles[i].y = dist_y(gen);
-		particles[i].theta = dist_theta(gen);
+		particle.x = dist_x(gen);
+		particle.y = dist_y(gen);
+		particle.theta = dist_theta(gen);
 	}
 }
 
@@ -116,47 +117,55 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 		landmarks_map[landmarks.id_i] = landmarks;
 	}
 
+	double first_term = pow((1 / (2 * M_PI * std_landmark[0] * std_landmark[1])), observations.size());
+	double std_0_term = 2 * std_landmark[0] * std_landmark[0];
+	double std_1_term = 2 * std_landmark[1] * std_landmark[1];
+
 	for (int i = 0; i < num_particles; ++i) {
 		// cout << "updateWeights - loop " << i << endl;
+
+		Particle &particle = particles[i];
 
 		// transform the observations to map frame
 		vector<LandmarkObs> observations_map;
 		for (const auto& obs : observations) {
 			LandmarkObs landmarkObs;
 			landmarkObs.id = obs.id;
-			landmarkObs.x = particles[i].x + (cos(particles[i].theta) * obs.x) - (sin(particles[i].theta) * obs.y);
-			landmarkObs.y = particles[i].y + (sin(particles[i].theta) * obs.x) + (cos(particles[i].theta) * obs.y);
+			landmarkObs.x = particle.x + (cos(particle.theta) * obs.x) - (sin(particle.theta) * obs.y);
+			landmarkObs.y = particle.y + (sin(particle.theta) * obs.x) + (cos(particle.theta) * obs.y);
 			observations_map.push_back(landmarkObs);
 		}
 		// cout << "updateWeights - loop " << i << " - transformation to map" << endl;
 
 		// associate the observations to map landmarks
-		// particles[i].associations.clear();
-		// particles[i].sense_x.clear();
-		// particles[i].sense_y.clear();
+		particle.associations.clear();
+		particle.sense_x.clear();
+		particle.sense_y.clear();
 		for (auto& obs : observations_map) {
 			double min_distance = numeric_limits<double>::infinity();
 			for (const auto& landmark : map_landmarks.landmark_list) {
-				double distance = hypot((obs.x - landmark.x_f), (obs.y - landmark.y_f));
+				double distance = (obs.x - landmark.x_f)*(obs.x - landmark.x_f) + 
+									(obs.y - landmark.y_f)*(obs.y - landmark.y_f);
 				if (distance < min_distance) {
 					obs.id = landmark.id_i;
 					min_distance = distance;
 				}
 			}
-			// particles[i].associations.push_back(obs.id);
-			// particles[i].sense_x.push_back(obs.x);
-			// particles[i].sense_y.push_back(obs.y);
+			particle.associations.push_back(obs.id);
+			particle.sense_x.push_back(obs.x);
+			particle.sense_y.push_back(obs.y);
 		}
 		// cout << "updateWeights - loop " << i << " - association" << endl;
 
 		// calculate multivariate gaussian distribution and update weight
-		double weight = 1;
+		particle.weight = first_term;
+		// cout << particle.weight << endl;
 		for (const auto& obs : observations_map) {
 			// cout << obs.id << obs.x << obs.y << endl;
-			weight *= (1 / (2 * M_PI * std_landmark[0] * std_landmark[1])) * 
-				exp(-(pow(obs.x - landmarks_map[obs.id].x_f, 2) / (2 * pow(std_landmark[0], 2)))-(pow(obs.y - landmarks_map[obs.id].y_f, 2) / (2 * pow(std_landmark[1], 2))));
+			double obs_x_term = obs.x - landmarks_map[obs.id].x_f;
+			double obs_y_term = obs.y - landmarks_map[obs.id].y_f;
+			particle.weight *= exp(-((obs_x_term * obs_x_term) / std_0_term)-((obs_y_term * obs_y_term) / std_1_term));
 		}
-		particles[i].weight = weight;
 		// cout << "updateWeights - loop " << i << " - updating weight" << endl;
 	}
 
